@@ -1,8 +1,6 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[1]:
-
 
 import torch
 import torch.nn as nn
@@ -19,9 +17,6 @@ from torch.utils.data import DataLoader
 from transformers import BertTokenizer
 from sklearn.metrics import f1_score
 from pytorch_lightning.callbacks import TQDMProgressBar
-
-
-# In[2]:
 
 
 class CustomDataset(Dataset):
@@ -41,9 +36,6 @@ class CustomDataset(Dataset):
             "content": str(row[self.content_col]),
             "class": row[self.target_col],
         }
-
-
-# In[3]:
 
 
 class CustomCollator:
@@ -70,12 +62,7 @@ class CustomCollator:
         }
 
 
-# In[4]:
-
-
 # Model for classification
-
-
 class BERTModel(pl.LightningModule):
     def __init__(
         self, model_name: str, num_classes: int, lr: float = 2e-5, class_weights=None
@@ -130,14 +117,15 @@ class BERTModel(pl.LightningModule):
 
 def train(
     train_df,
-    num_classes,
-    num_epochs=5,
+    model_name="bert-base-uncased",
+    num_classes=2,
+    num_epochs=3,
     id_col="pmcid",
     content_col="text",
     target_col="label",
 ):
     # 1. Setup Data
-    print("Setting up data...")
+
     tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
     collator = CustomCollator(tokenizer, max_seq_len=64)  # Reduced for speed
 
@@ -149,20 +137,14 @@ def train(
         num_workers=0,  # Must be 0 in notebooks (multiprocessing can't pickle notebook-defined classes)
         persistent_workers=False,
     )
-    print(f"Train set size: {len(train_df)} samples, {len(train_loader)} batches")
 
     # 2. Setup Model
-    print("Loading model...")
     weights = compute_class_weight(
         "balanced", classes=np.unique(train_df[target_col]), y=train_df[target_col]
     )
     class_weights = torch.tensor(weights, dtype=torch.float)
-    model = BERTModel(
-        "bert-base-uncased", num_classes=num_classes, class_weights=class_weights
-    )
-    print(
-        f"Model loaded: bert-base-uncased | num_classes={num_classes} | lr={model.lr}"
-    )
+    model = BERTModel(model_name, num_classes=num_classes, class_weights=class_weights)
+
 
     # 3. Setup Trainer
     trainer = pl.Trainer(
@@ -178,10 +160,14 @@ def train(
     )
 
     # 4. Train
-    print(f"Starting training for {num_epochs} epoch(s)...")
+
     trainer.fit(model, train_loader)
-    print("Training complete.")
-    return model, tokenizer
+
+    save_dir = "saved_models"
+    torch.save(model.state_dict(), f"{save_dir}/model.pt")
+    tokenizer.save_pretrained(save_dir)
+
+    return (model, tokenizer)
 
 
 def predict(model, tokenizer, sentence, device):
@@ -219,10 +205,8 @@ def evaluate(model, test_df, tokenizer):
     return f1
 
 
-# In[6]:
 
-
-def train_and_eval_on_train_set(train_data):
+def train_and_eval_on_train_set(train_data, save_dir="saved_model"):
     train_df, test_df = train_test_split(train_data, test_size=0.2, random_state=42)
 
     model, tokenizer = train(train_df, target_col="label", num_classes=2, num_epochs=3)
@@ -230,12 +214,9 @@ def train_and_eval_on_train_set(train_data):
     evaluate(model, test_df, tokenizer)
 
 
-# In[ ]:
 
 train_path = "data/train.tsv"
 val_path = "data/val.tsv"
 
 train_data = pd.read_csv(train_path, sep="\t")
 val_data = pd.read_csv(val_path, sep="\t")
-
-train_and_eval_on_train_set(train_data)
