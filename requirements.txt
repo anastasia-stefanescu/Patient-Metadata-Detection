@@ -4,4 +4,4 @@ transformers
 pandas==2.2.3
 scikit-learn
 numpy==1.26.4
-
+ipywidgets
