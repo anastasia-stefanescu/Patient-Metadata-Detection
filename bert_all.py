@@ -77,7 +77,9 @@ class CustomCollator:
 
 
 class BERTModel(pl.LightningModule):
-    def __init__(self, model_name: str, num_classes: int, lr: float = 2e-5, class_weights=None):
+    def __init__(
+        self, model_name: str, num_classes: int, lr: float = 2e-5, class_weights=None
+    ):
         super().__init__()
         self.save_hyperparameters()
         self.model = AutoModel.from_pretrained(model_name)
@@ -151,8 +153,16 @@ def train(
 
     # 2. Setup Model
     print("Loading model...")
-    model = BERTModel("bert-base-uncased", num_classes=num_classes)
-    print(f"Model loaded: bert-base-uncased | num_classes={num_classes} | lr={model.lr}")
+    weights = compute_class_weight(
+        "balanced", classes=np.unique(train_df[target_col]), y=train_df[target_col]
+    )
+    class_weights = torch.tensor(weights, dtype=torch.float)
+    model = BERTModel(
+        "bert-base-uncased", num_classes=num_classes, class_weights=class_weights
+    )
+    print(
+        f"Model loaded: bert-base-uncased | num_classes={num_classes} | lr={model.lr}"
+    )
 
     # 3. Setup Trainer
     trainer = pl.Trainer(
@@ -200,7 +210,7 @@ def evaluate(model, test_df, tokenizer):
 
     predictions = []
     for _, row in test_df.iterrows():
-        pred = predict(model, tokenizer, str(row["sentence"]), device)
+        pred = predict(model, tokenizer, str(row["text"]), device)
         predictions.append(pred)
 
     f1 = f1_score(true_labels, predictions, average="weighted")
@@ -229,4 +239,3 @@ train_data = pd.read_csv(train_path, sep="\t")
 val_data = pd.read_csv(val_path, sep="\t")
 
 train_and_eval_on_train_set(train_data)
-
