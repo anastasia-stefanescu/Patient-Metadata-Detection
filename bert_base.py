@@ -7,8 +7,11 @@ from transformers import AutoTokenizer, AutoModel
 
 
 class CustomDataset(Dataset):
-    def __init__(self, df):
+    def __init__(self, df, id_col, content_col, target_col):
         self.df = df
+        self.id_col = id_col
+        self.content_col = content_col
+        self.target_col = target_col
 
     def __len__(self):
         return len(self.df)
@@ -16,9 +19,9 @@ class CustomDataset(Dataset):
     def __getitem__(self, index):
         row = self.df.iloc[index]
         return {
-            "pmcid": row["pmcid"],
-            "content": str(row["text"]),
-            "class": row["label"],
+            "pmcid": row[self.id_col],
+            "content": str(row[self.content_col]),
+            "class": row[self.target_col],
         }
 
 
