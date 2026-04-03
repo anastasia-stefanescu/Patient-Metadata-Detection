@@ -1,20 +1,15 @@
-#!/usr/bin/env python
-# coding: utf-8
-
-
+import os
 import torch
+from datetime import datetime
 import torch.nn as nn
 import pytorch_lightning as pl
 from torch.optim import AdamW
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, DataLoader
 from transformers import AutoTokenizer, AutoModel
 import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.utils.class_weight import compute_class_weight
-import pytorch_lightning as pl
-from torch.utils.data import DataLoader
-from transformers import BertTokenizer
 from sklearn.metrics import f1_score
 from pytorch_lightning.callbacks import TQDMProgressBar
 
@@ -72,7 +67,6 @@ class BERTModel(pl.LightningModule):
         self.model = AutoModel.from_pretrained(model_name)
         self.output_layer = nn.Linear(self.model.config.hidden_size, num_classes)
         self.register_buffer("class_weights", class_weights)
-        self.loss_fct = nn.CrossEntropyLoss(weight=self.class_weights)
         self.lr = lr
 
     def forward(self, input_ids, attention_mask):
@@ -82,10 +76,12 @@ class BERTModel(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         logits = self(batch["input_ids"], batch["attention_mask"])
-        loss = self.loss_fct(logits, batch["targets"].long())
+        loss = nn.CrossEntropyLoss(weight=self.class_weights)(
+            logits, batch["targets"].long()
+        )
         preds = torch.argmax(logits, dim=1)
 
-        acc = (preds == batch["targets"]).float().mean()
+        acc = (preds == batch["targets"].long()).float().mean()
         f1 = f1_score(batch["targets"].cpu(), preds.cpu(), average="weighted")
 
         self.log("train_f1", f1, prog_bar=True, on_step=False, on_epoch=True)
@@ -95,10 +91,12 @@ class BERTModel(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         logits = self(batch["input_ids"], batch["attention_mask"])
-        loss = self.loss_fct(logits, batch["targets"].long())
+        loss = nn.CrossEntropyLoss(weight=self.class_weights)(
+            logits, batch["targets"].long()
+        )
         preds = torch.argmax(logits, dim=1)
 
-        acc = (preds == batch["targets"]).float().mean()
+        acc = (preds == batch["targets"].long()).float().mean()
         f1 = f1_score(batch["targets"].cpu(), preds.cpu(), average="weighted")
 
         self.log("val_f1", f1, prog_bar=True, on_epoch=True)
@@ -107,12 +105,6 @@ class BERTModel(pl.LightningModule):
 
     def configure_optimizers(self):
         return AdamW(self.parameters(), lr=self.lr)
-
-
-# In[5]:
-
-
-# Assuming these are in your bert_base.py
 
 
 def train(
@@ -125,8 +117,7 @@ def train(
     target_col="label",
 ):
     # 1. Setup Data
-
-    tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
     collator = CustomCollator(tokenizer, max_seq_len=64)  # Reduced for speed
 
     train_loader = DataLoader(
@@ -145,7 +136,6 @@ def train(
     class_weights = torch.tensor(weights, dtype=torch.float)
     model = BERTModel(model_name, num_classes=num_classes, class_weights=class_weights)
 
-
     # 3. Setup Trainer
     trainer = pl.Trainer(
         accelerator="auto",
@@ -160,11 +150,10 @@ def train(
     )
 
     # 4. Train
-
     trainer.fit(model, train_loader)
 
     save_dir = "saved_models"
-    torch.save(model.state_dict(), f"{save_dir}/model.pt")
+    torch.save(model.state_dict(), os.path.join(save_dir, "model.pt"))
     tokenizer.save_pretrained(save_dir)
 
     return (model, tokenizer)
@@ -175,9 +164,12 @@ def predict(model, tokenizer, sentence, device):
 
     model.eval()
 
-    inputs = tokenizer(
-        sentence, return_tensors="pt", truncation=True, padding=True, max_length=64
-    ).to(device)
+    inputs = {
+        k: v.to(device)
+        for k, v in tokenizer(
+            sentence, return_tensors="pt", truncation=True, padding=True, max_length=64
+        ).items()
+    }
 
     with torch.no_grad():
         logits = model(inputs["input_ids"], inputs["attention_mask"])
@@ -186,18 +178,27 @@ def predict(model, tokenizer, sentence, device):
 
 
 def evaluate(model, test_df, tokenizer):
-    """Loops through a test dataframe and prints the final accuracy."""
+    """Loops through a test dataframe, saves predictions and prints the
+    final F1 score."""
 
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
     model.eval()
 
     true_labels = test_df["label"].tolist()
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    current_date = datetime.now().strftime("%Y%m%d_%H%M%S")
+    file_name = f"bert_predictions_{current_date}.txt"
 
     predictions = []
-    for _, row in test_df.iterrows():
-        pred = predict(model, tokenizer, str(row["text"]), device)
-        predictions.append(pred)
+    with open(f"predictions/{file_name}", "w") as f:
+        f.write("pmcid\tlabel")
+
+        for _, row in test_df.iterrows():
+            pred = predict(model, tokenizer, str(row["text"]), device)
+            predictions.append(pred)
+
+            f.write(f"\n{row['pmcid']}\t{pred}")
 
     f1 = f1_score(true_labels, predictions, average="weighted")
     print(f"F1 Score: {f1:.4f}")
@@ -205,14 +206,32 @@ def evaluate(model, test_df, tokenizer):
     return f1
 
 
-
-def train_and_eval_on_train_set(train_data, save_dir="saved_model"):
+def train_and_eval_on_train_set(train_data):
     train_df, test_df = train_test_split(train_data, test_size=0.2, random_state=42)
 
     model, tokenizer = train(train_df, target_col="label", num_classes=2, num_epochs=3)
 
     evaluate(model, test_df, tokenizer)
 
+
+def train_and_eval():
+    model, tokenizer = train(
+        train_data, target_col="label", num_classes=2, num_epochs=3
+    )
+
+    evaluate(model, val_data, tokenizer)
+
+
+def load_model_and_eval():
+    model_name = "bert-base-uncased"
+    num_classes = 2
+    save_dir = "saved_models"
+
+    tokenizer = AutoTokenizer.from_pretrained(save_dir)
+    model = BERTModel(model_name, num_classes=num_classes)
+    model.load_state_dict(torch.load(os.path.join(save_dir, "model.pt")), strict=False)
+
+    evaluate(model, val_data, tokenizer)
 
 
 train_path = "data/train.tsv"
